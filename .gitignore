@@ -1,0 +1,10 @@
+*.pdf
+./imag_feats/*
+*.npy
+*.jpg
+*.JPG
+*.dat
+*.pt
+mdata.*
+ddata.*
+*.zip

@@ -146,6 +146,9 @@ parser.add_argument('--use_dropout', type=str2bool,
 parser.add_argument('--use_multimodal', type=str2bool,
                     default=False,
                     help='use multimodal input')
+parser.add_argument('--valid_num', type=str2bool,
+                    default=0,
+                    help='validation option if 0 from first, 1 from last')
 
 args = parser.parse_args()
 

@@ -29,6 +29,7 @@ Update: 2022.04.20.
 
 
 import torch
+import torchmetrics
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
@@ -41,7 +42,7 @@ from scipy import stats
 from file_io import *
 from requirement import *
 from policy import *
-
+import wandb
 
 # # of items in fashion coordination
 NUM_ITEM_IN_COORDI = 4
@@ -60,7 +61,7 @@ class FahsionHowDataset(Dataset):
     """ Fashion-How dataset."""
     def __init__(self, in_file_trn_dialog, swer, mem_size, emb_size,
                  crd_size, metadata, itm2idx, idx2itm, feats, num_rnk,
-                 similarities, corr_thres):
+                 similarities, corr_thres, valid_num=0, is_valid=False):
         """
         initialize your data, download, etc.
         """
@@ -76,11 +77,33 @@ class FahsionHowDataset(Dataset):
         self._similarities = similarities
         self._corr_thres = corr_thres
         self._datatype = ['aug2', 'aug1', 'org']
+        
+        ''' 수정 사항 '''
+        # make_io_trn_data는 deterministic 한 dataset 만드는 함수이므로 결과를 미리 저장하고 로드하는 것으로 바꿈
         self._dlg, self._crd = make_io_trn_data(
                         in_file_trn_dialog, self._swer, self._mem_size,
                         self._crd_size, self._itm2idx, self._idx2itm,
                         self._metadata, self._similarities, self._num_rnk,
                         self._corr_thres, self._feats)
+        if is_valid:
+            if valid_num==0:
+                print(1)
+                self._dlg = self._dlg[:2506]
+                self._crd = self._crd[:2506]
+            else:
+                print(2)
+                self._dlg = self._dlg[-2506:]
+                self._crd = self._crd[-2506:]
+        else:
+            if valid_num==0:
+                print(3)
+                self._dlg = self._dlg[2506:]
+                self._crd = self._crd[2506:]
+            else:
+                print(4)
+                self._dlg = self._dlg[:17348]
+                self._crd = self._crd[:17348]
+        ''' 수정 사항 '''
         self._len = len(self._dlg)
         self._num_item_in_coordi = len(self._crd[0][0])
 
@@ -160,8 +183,7 @@ class Model(nn.Module):
         """
         req = self._requirement(dlg)
         logits = self._policy(req, crd)
-        preds = torch.argmax(logits, 1)
-        return logits, preds
+        return logits
 
 
 class gAIa(object):
@@ -170,6 +192,7 @@ class gAIa(object):
         """
         initialize
         """
+        self.args = args
         self._device = device
         self._batch_size = args.batch_size
         self._model_path = args.model_path
@@ -205,15 +228,29 @@ class gAIa(object):
         # prepare DB for training
         if args.mode == 'train':
             # dataloader
-            dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
+            train_dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
                                         args.mem_size, self._emb_size,
                                         coordi_size, metadata, item2idx,
                                         idx2item, feats, self._num_rnk,
-                                        similarities, args.corr_thres)
-            self._num_examples = len(dataset)
-            self._dataloader = DataLoader(dataset,
+                                        similarities, args.corr_thres, args.valid_num)
+            
+            valid_dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
+                            args.mem_size, self._emb_size,
+                            coordi_size, metadata, item2idx,
+                            idx2item, feats, self._num_rnk,
+                            similarities, args.corr_thres, args.valid_num, is_valid=True)                        
+            self._num_examples = len(train_dataset)
+            self._dataloader = DataLoader(train_dataset,
                                           batch_size=self._batch_size,
-                                          shuffle=True)
+                                          shuffle=True, num_workers=8, pin_memory=True)
+            ''' 수정 사항 '''
+            self._num_examples_val = len(valid_dataset)
+            self._dataloader_val = DataLoader(valid_dataset,
+                                          batch_size=self._batch_size,
+                                          shuffle=True, num_workers=8, pin_memory=True)
+            print("Train dataset samples: ", self._num_examples)
+            print("Valid dataset samples: ", self._num_examples_val)
+            ''' 수정 사항 '''
         # prepare DB for evaluation
         elif args.mode == 'test' or args.mode == 'zsl':
             self._tst_dlg, self._tst_crd = make_io_eval_data(
@@ -239,7 +276,7 @@ class gAIa(object):
             self._optimizer = optim.SGD(self._model.parameters(),
                                         lr=args.learning_rate)
 
-    def _get_loss(self, batch):
+    def _get_loss(self, batch, loss_fct):
         """
         calculate loss
         """
@@ -255,19 +292,23 @@ class gAIa(object):
         rnk = torch.stack(rnk_shuffle)
         dlg = dlg.type(torch.float32)
         crd = crd.type(torch.float32)
-        logits, preds = self._model(dlg, crd)
+        logits = self._model(dlg, crd)
         loss = 0.0
 
-        loss_fct = torch.nn.CrossEntropyLoss()
         label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
         for i in range(len(logits)):
             loss += loss_fct(logits[i], label[i])
+        preds = torch.argmax(logits, 1)
         return loss, preds, label
 
     def train(self):
         """
         training
         """
+        wandb.init(project="task4", entity="stitching-tailors",config=self.args)
+        wandb.run.name = 'clip_loss'
+        loss_fct = torch.nn.CrossEntropyLoss()
+
         print('\n<Train>')
         print('total examples in dataset: {}'.format(self._num_examples))
         if not os.path.exists(self._model_path):
@@ -287,25 +328,45 @@ class gAIa(object):
         self._model.to(self._device)
         end_epoch = self._epochs + init_epoch
         for curr_epoch in range(init_epoch, end_epoch):
+            calc_train_acc = torchmetrics.Accuracy()
+            calc_valid_acc = torchmetrics.Accuracy()
             time_start = timeit.default_timer()
             losses = []
+            val_losses = []
+            
             iter_bar = tqdm(self._dataloader)
             for batch in iter_bar:
                 self._optimizer.zero_grad()
                 batch = [t.to(self._device) for t in batch]
-                loss, pred, label = self._get_loss(batch)#.mean()
+                loss, preds, labels = self._get_loss(batch, loss_fct)#.mean()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self._model.parameters(),
                                          self._max_grad_norm)
                 self._optimizer.step()
-                losses.append(loss)
+                losses.append(loss.mean())
+                train_acc = calc_train_acc(preds.cpu().detach(), labels.cpu().detach())
             time_end = timeit.default_timer()
+            
+            val_iter_bar = tqdm(self._dataloader_val)
+            with torch.no_grad():
+                self._model.eval()
+                for batch in val_iter_bar:
+                    batch = [t.to(self._device) for t in batch]
+                    loss, preds, labels = self._get_loss(batch, loss_fct)#.mean().item()
+                    val_losses.append(loss.mean())
+                    valid_acc = calc_valid_acc(preds.cpu().detach(), labels.cpu().detach())
+
             print('-'*30)
             print('Epoch: {}/{}'.format(curr_epoch, end_epoch - 1))
             print('Time: {:.2f}sec'.format(time_end - time_start))
             print('Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
-            print('pred:', pred.detach().cpu(), 'label:', label.detach().cpu())
+            print('Val Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
+            print('Val pred:', preds.detach().cpu(), 'label:', labels.detach().cpu())
+            print("train_acc: ", calc_train_acc.compute(), "valid_acc: ", calc_valid_acc.compute())
             print('-'*30)
+            
+            wandb.log({"train_loss":torch.mean(torch.tensor(losses)), "valid_loss":torch.mean(torch.tensor(val_losses)), \
+                       "train_acc":calc_train_acc.compute(), "valid_acc":calc_valid_acc.compute()})
             if curr_epoch % self._save_freq == 0:
                 file_name = os.path.join(self._model_path,
                                          'gAIa-{}.pt'.format(curr_epoch))

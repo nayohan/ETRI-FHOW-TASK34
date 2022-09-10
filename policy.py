@@ -104,6 +104,14 @@ class PolicyNet_(nn.Module):
             num_in = num_out
         self._mlp_rnk = nn.Sequential(mlp_rnk_list) 
 
+        self._clip_crd = nn.Linear(self._eval_out_node, 100)
+        # self._clip_crd2 = nn.Linear(self._eval_out_node, 100)        
+        # self._clip_crd3 = nn.Linear(self._eval_out_node, 100)
+        self._clip_dlg1 = nn.Linear(self._eval_out_node, 100)
+        self._clip_dlg2 = nn.Linear(self._eval_out_node, 100)
+        self._clip_dlg3 = nn.Linear(self._eval_out_node, 100)
+        self._output_fc  = nn.Linear(9, 6)
+        
     def _evaluate_coordi(self, crd, req):
         """
         evaluate candidates
@@ -125,19 +133,44 @@ class PolicyNet_(nn.Module):
         """
         out_rnk = self._mlp_rnk(in_rnk)
         return out_rnk
+    
+    def _coordi_encode(self, crd):
+        #print('crd:', crd.shape) # ([b, 4, 2560])
+        inputs = torch.transpose(crd, 0, 1) # ([4, b, 2560])
+        enc = self._transformer(inputs)
+        enc_m = torch.mean(enc, dim=0) # ([b, 2560])
+        #print('enc_m:', enc_m.shape)
+        evl = self._summary(enc_m) # ([b, 600])
+        evl = torch.unsqueeze(evl, 1) # ([b, 1, 600])
+        #print('evl:', evl.shape)
+        return evl
         
     def forward(self, req, crd):
         """
         build graph for evaluation and ranking         
         """
-        crd_tr = torch.transpose(crd, 1, 0)
+        dlg_emb1 = self._clip_dlg1(req) # (b, 3, 300) -> (b, 3, 100)
+        dlg_emb2 = self._clip_dlg2(req) # (b, 3, 100)
+        dlg_emb3 = self._clip_dlg3(req) # (b, 3, 100)
+        dlg_emb = torch.stack([dlg_emb1, dlg_emb2, dlg_emb3], dim=1) #([b, 3, 100])
+        crd_tr = torch.transpose(crd, 1, 0) # (4,3,2560)
         for i in range(self._num_rnk):
-            crd_eval = self._evaluate_coordi(crd_tr[i], req)
+            crd_eval = self._coordi_encode(crd_tr[i])
             if i == 0:
-                in_rnk = crd_eval
+                crd_emb = crd_eval
             else:
-                in_rnk = torch.cat((in_rnk, crd_eval), 1)
-        in_rnk = torch.cat((in_rnk, req), 1)
-        out_rnk = self._ranking_coordi(in_rnk)
-        return out_rnk
+                crd_emb = torch.cat((crd_emb, crd_eval), 1)
+                
+        crd_end = self._clip_crd(crd_emb) # ( b, 3, 100)
+        crd_end = torch.transpose(crd_end, 1, 2) # (b, 100, 3)
+
+        similarity = (100.0 * torch.bmm(dlg_emb, crd_end))#.softmax(dim=0) # (b, 3, 100), (b,100, 3) -> (b, 3, 3)
+        similarity = torch.reshape(similarity, (-1, 9))
+        out_rnk = self._output_fc(similarity)
+        soft_out_rnk = out_rnk.softmax(dim=1)
+        #print('similarity.shape:',  similarity.shape) # ([3, 3])
+        #print('similarity:',  similarity) # ([3, 3])
+        #print('out_rnk:',  out_rnk) # ([3, 3])
+        #$print('soft_out_rnk:', soft_out_rnk)
+        return soft_out_rnk
         

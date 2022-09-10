@@ -255,16 +255,14 @@ class gAIa(object):
         rnk = torch.stack(rnk_shuffle)
         dlg = dlg.type(torch.float32)
         crd = crd.type(torch.float32)
-        logits, _ = self._model(dlg, crd)
+        logits, preds = self._model(dlg, crd)
         loss = 0.0
+
+        loss_fct = torch.nn.CrossEntropyLoss()
+        label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
         for i in range(len(logits)):
-            probs = nn.functional.softmax(logits[i], dim=0)
-            for j in range(len(self._rnk_lst)):
-                corr, _ = stats.weightedtau(
-                                self._num_rnk-1-self._rnk_lst[rnk[i]],
-                                self._num_rnk-1-self._rnk_lst[j])
-                loss += ((1.0 - corr) * 0.5 * probs[j])
-        return loss
+            loss += loss_fct(logits[i], label[i])
+        return loss, preds, label
 
     def train(self):
         """
@@ -295,7 +293,7 @@ class gAIa(object):
             for batch in iter_bar:
                 self._optimizer.zero_grad()
                 batch = [t.to(self._device) for t in batch]
-                loss = self._get_loss(batch).mean()
+                loss, pred, label = self._get_loss(batch)#.mean()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self._model.parameters(),
                                          self._max_grad_norm)
@@ -306,6 +304,7 @@ class gAIa(object):
             print('Epoch: {}/{}'.format(curr_epoch, end_epoch - 1))
             print('Time: {:.2f}sec'.format(time_end - time_start))
             print('Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
+            print('pred:', pred.detach().cpu(), 'label:', label.detach().cpu())
             print('-'*30)
             if curr_epoch % self._save_freq == 0:
                 file_name = os.path.join(self._model_path,

@@ -3,7 +3,7 @@ CUDA_VISIBLE_DEVICES="0" python ./main.py --mode train \
                                      --in_file_fashion ../data/task4/mdata.wst.txt.2021.10.18 \
                                      --in_dir_img_feats ../data/task4/img_feats \
                                      --subWordEmb_path ../data/task4/sstm_v0p5_deploy/sstm_v4p49_np_n36134_d128.dat \
-                                     --model_path ./gAIa_model \
+                                     --model_path ./gAIa_model_b200_e2000_th0.5 \
                                      --mem_size 32 \
                                      --key_size 300 \
                                      --hops 3 \
@@ -12,14 +12,12 @@ CUDA_VISIBLE_DEVICES="0" python ./main.py --mode train \
                                      --tf_nhead 4 \
                                      --tf_ff_dim 4096 \
                                      --tf_num_layers 4 \
-                                     --epochs 100 \
-                                     --save_freq 10 \
-                                     --batch_size 10 \
+                                     --epochs 2000 \
+                                     --save_freq 20 \
+                                     --batch_size 200 \
                                      --learning_rate 0.001 \
                                      --max_grad_norm 20.0 \
                                      --use_multimodal True \
                                      --use_dropout True \
                                      --eval_zero_prob 0.5 \
-                                     --corr_thres 0.9 \
-
-
+                                     --corr_thres 0.5 \

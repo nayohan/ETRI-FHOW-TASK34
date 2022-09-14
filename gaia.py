@@ -56,6 +56,13 @@ IMG_FEAT_SIZE = 2048
 # augmentation ratio (aug2:aug1:org)
 AUGMENTATION_RATIO = [0.5, 0.4, 0.1]
 
+seed=2022
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)  # if use multi-GPU
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(seed)
 
 class FahsionHowDataset(Dataset):
     """ Fashion-How dataset."""
@@ -305,6 +312,7 @@ class gAIa(object):
         """
         training
         """
+        #wandb.init(project="fasionhow-task4",config=self.args) # , entity="stitching-tailors"
         wandb.init(project="task4", entity="stitching-tailors",config=self.args)
         wandb.run.name = 'clip_loss'
         loss_fct = torch.nn.CrossEntropyLoss()
@@ -335,7 +343,8 @@ class gAIa(object):
             val_losses = []
             
             iter_bar = tqdm(self._dataloader)
-            for batch in iter_bar:
+            for batch_idx, batch in enumerate(iter_bar):
+                example_ct = curr_epoch * (len(self._dataloader)) + batch_idx
                 self._optimizer.zero_grad()
                 batch = [t.to(self._device) for t in batch]
                 loss, preds, labels = self._get_loss(batch, loss_fct)#.mean()
@@ -360,13 +369,12 @@ class gAIa(object):
             print('Epoch: {}/{}'.format(curr_epoch, end_epoch - 1))
             print('Time: {:.2f}sec'.format(time_end - time_start))
             print('Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
-            print('Val Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
+            print('Val Loss: {:.4f}'.format(torch.mean(torch.tensor(val_losses))))
             print('Val pred:', preds.detach().cpu(), 'label:', labels.detach().cpu())
             print("train_acc: ", calc_train_acc.compute(), "valid_acc: ", calc_valid_acc.compute())
             print('-'*30)
-            
-            wandb.log({"train_loss":torch.mean(torch.tensor(losses)), "valid_loss":torch.mean(torch.tensor(val_losses)), \
-                       "train_acc":calc_train_acc.compute(), "valid_acc":calc_valid_acc.compute()})
+            wandb.log({"validation_loss":float(torch.mean(torch.tensor(val_losses)).detach().cpu()), "train_loss":float(torch.mean(torch.tensor(losses)).detach().cpu()),  \
+                       "train_acc":calc_train_acc.compute(), "valid_acc":calc_valid_acc.compute()}, step=example_ct+1)
             if curr_epoch % self._save_freq == 0:
                 file_name = os.path.join(self._model_path,
                                          'gAIa-{}.pt'.format(curr_epoch))

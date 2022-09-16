@@ -8,7 +8,7 @@
 mdata.*
 ddata.*
 *.zip
-
+*.out
 
 wandb/
 __pycache__/

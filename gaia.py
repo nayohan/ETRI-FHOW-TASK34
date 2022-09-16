@@ -92,25 +92,7 @@ class FahsionHowDataset(Dataset):
                         self._crd_size, self._itm2idx, self._idx2itm,
                         self._metadata, self._similarities, self._num_rnk,
                         self._corr_thres, self._feats)
-        if is_valid:
-            if valid_num==0:
-                print(1)
-                self._dlg = self._dlg[:2506]
-                self._crd = self._crd[:2506]
-            else:
-                print(2)
-                self._dlg = self._dlg[-2506:]
-                self._crd = self._crd[-2506:]
-        else:
-            if valid_num==0:
-                print(3)
-                self._dlg = self._dlg[2506:]
-                self._crd = self._crd[2506:]
-            else:
-                print(4)
-                self._dlg = self._dlg[:17348]
-                self._crd = self._crd[:17348]
-        ''' 수정 사항 '''
+
         self._len = len(self._dlg)
         self._num_item_in_coordi = len(self._crd[0][0])
 
@@ -241,23 +223,11 @@ class gAIa(object):
                                         idx2item, feats, self._num_rnk,
                                         similarities, args.corr_thres, args.valid_num)
             
-            valid_dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
-                            args.mem_size, self._emb_size,
-                            coordi_size, metadata, item2idx,
-                            idx2item, feats, self._num_rnk,
-                            similarities, args.corr_thres, args.valid_num, is_valid=True)                        
+                
             self._num_examples = len(train_dataset)
             self._dataloader = DataLoader(train_dataset,
                                           batch_size=self._batch_size,
                                           shuffle=True, num_workers=8, pin_memory=True)
-            ''' 수정 사항 '''
-            self._num_examples_val = len(valid_dataset)
-            self._dataloader_val = DataLoader(valid_dataset,
-                                          batch_size=self._batch_size,
-                                          shuffle=True, num_workers=8, pin_memory=True)
-            print("Train dataset samples: ", self._num_examples)
-            print("Valid dataset samples: ", self._num_examples_val)
-            ''' 수정 사항 '''
         # prepare DB for evaluation
         elif args.mode == 'test' or args.mode == 'zsl':
             self._tst_dlg, self._tst_crd = make_io_eval_data(
@@ -280,8 +250,8 @@ class gAIa(object):
 
         if args.mode == 'train':
             # optimizer
-            self._optimizer = optim.SGD(self._model.parameters(),
-                                        lr=args.learning_rate)
+            self._optimizer = optim.SGD(self._model.parameters(), lr=args.learning_rate)
+            self._lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self._optimizer, T_0=20, T_mult=2, eta_min=0)
 
     def _get_loss(self, batch, loss_fct):
         """
@@ -302,9 +272,21 @@ class gAIa(object):
         logits = self._model(dlg, crd)
         loss = 0.0
 
-        label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
+        # label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
+        # for i in range(len(logits)):
+        #     loss += loss_fct(logits[i], label[i])
+        print(logits.shape)
+        logits = torch.mean(logits, dim=1)
+        print(logits.shape)
         for i in range(len(logits)):
-            loss += loss_fct(logits[i], label[i])
+            probs = nn.functional.softmax(logits[i], dim=0)
+            for j in range(len(self._rnk_lst)):
+                corr, _ = stats.weightedtau(
+                                self._num_rnk-1-self._rnk_lst[rnk[i]],
+                                self._num_rnk-1-self._rnk_lst[j])
+                loss += ((1.0 - corr) * 0.5 * probs[j])
+
+        label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
         preds = torch.argmax(logits, 1)
         return loss, preds, label
 
@@ -337,10 +319,8 @@ class gAIa(object):
         end_epoch = self._epochs + init_epoch
         for curr_epoch in range(init_epoch, end_epoch):
             calc_train_acc = torchmetrics.Accuracy()
-            calc_valid_acc = torchmetrics.Accuracy()
             time_start = timeit.default_timer()
             losses = []
-            val_losses = []
             
             iter_bar = tqdm(self._dataloader)
             for batch_idx, batch in enumerate(iter_bar):
@@ -356,25 +336,17 @@ class gAIa(object):
                 train_acc = calc_train_acc(preds.cpu().detach(), labels.cpu().detach())
             time_end = timeit.default_timer()
             
-            val_iter_bar = tqdm(self._dataloader_val)
-            with torch.no_grad():
-                self._model.eval()
-                for batch in val_iter_bar:
-                    batch = [t.to(self._device) for t in batch]
-                    loss, preds, labels = self._get_loss(batch, loss_fct)#.mean().item()
-                    val_losses.append(loss.mean())
-                    valid_acc = calc_valid_acc(preds.cpu().detach(), labels.cpu().detach())
-
             print('-'*30)
             print('Epoch: {}/{}'.format(curr_epoch, end_epoch - 1))
             print('Time: {:.2f}sec'.format(time_end - time_start))
             print('Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
-            print('Val Loss: {:.4f}'.format(torch.mean(torch.tensor(val_losses))))
             print('Val pred:', preds.detach().cpu(), 'label:', labels.detach().cpu())
-            print("train_acc: ", calc_train_acc.compute(), "valid_acc: ", calc_valid_acc.compute())
+            print("train_acc: ", calc_train_acc.compute())
             print('-'*30)
-            wandb.log({"validation_loss":float(torch.mean(torch.tensor(val_losses)).detach().cpu()), "train_loss":float(torch.mean(torch.tensor(losses)).detach().cpu()),  \
-                       "train_acc":calc_train_acc.compute(), "valid_acc":calc_valid_acc.compute()}, step=example_ct+1)
+            #self._lr_scheduler.step()
+            wandb.log({"train_loss":float(torch.mean(torch.tensor(losses)).detach().cpu()),  \
+                       "train_acc":calc_train_acc.compute(), \
+                       'learning_rate':float(self._lr_scheduler.get_last_lr()[0])}, step=example_ct+1)
             if curr_epoch % self._save_freq == 0:
                 file_name = os.path.join(self._model_path,
                                          'gAIa-{}.pt'.format(curr_epoch))

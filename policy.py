@@ -165,12 +165,12 @@ class PolicyNet_(nn.Module):
         crd_end = torch.transpose(crd_end, 1, 2) # (b, 100, 3)
 
         similarity = (100.0 * torch.bmm(dlg_emb, crd_end))#.softmax(dim=0) # (b, 3, 100), (b,100, 3) -> (b, 3, 3)
-        similarity = torch.reshape(similarity, (-1, 9))
-        out_rnk = self._output_fc(similarity)
-        soft_out_rnk = out_rnk.softmax(dim=1)
+        #similarity = torch.reshape(similarity, (-1, 9))
+        #out_rnk = self._output_fc(similarity)
+        #soft_out_rnk = out_rnk.softmax(dim=1)
         #print('similarity.shape:',  similarity.shape) # ([3, 3])
         #print('similarity:',  similarity) # ([3, 3])
         #print('out_rnk:',  out_rnk) # ([3, 3])
         #$print('soft_out_rnk:', soft_out_rnk)
-        return soft_out_rnk
+        return similarity
         

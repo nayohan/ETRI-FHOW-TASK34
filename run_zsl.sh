@@ -4,7 +4,7 @@ CUDA_VISIBLE_DEVICES="0" python ./main.py --mode zsl \
                                    --in_dir_img_feats ../data/task4/img_feats \
                                    --subWordEmb_path ../data/task4/sstm_v0p5_deploy/sstm_v4p49_np_n36134_d128.dat \
                                    --model_path ./gAIa_model \
-                                   --model_file gAIa-80.pt \
+                                   --model_file gAIa-80-t.pt \
                                    --mem_size 16 \
                                    --key_size 300 \
                                    --hops 3 \
@@ -14,7 +14,3 @@ CUDA_VISIBLE_DEVICES="0" python ./main.py --mode zsl \
                                    --tf_num_layers 4 \
                                    --batch_size 100 \
                                    --use_multimodal True \
-
-
-
-

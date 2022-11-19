@@ -112,6 +112,7 @@ class PolicyNet_(nn.Module):
         self._clip_dlg3 = nn.Linear(self._eval_out_node, 100)
         self._output_fc  = nn.Linear(9, 6)
         
+
     def _evaluate_coordi(self, crd, req):
         """
         evaluate candidates
@@ -153,7 +154,7 @@ class PolicyNet_(nn.Module):
         dlg_emb2 = self._clip_dlg2(req) # (b, 3, 100)
         dlg_emb3 = self._clip_dlg3(req) # (b, 3, 100)
         dlg_emb = torch.stack([dlg_emb1, dlg_emb2, dlg_emb3], dim=1) #([b, 3, 100])
-        crd_tr = torch.transpose(crd, 1, 0) # (4,3,2560)
+        crd_tr = torch.transpose(crd, 1, 0)
         for i in range(self._num_rnk):
             crd_eval = self._coordi_encode(crd_tr[i])
             if i == 0:
@@ -161,16 +162,16 @@ class PolicyNet_(nn.Module):
             else:
                 crd_emb = torch.cat((crd_emb, crd_eval), 1)
                 
-        crd_end = self._clip_crd(crd_emb) # ( b, 3, 100)
+        crd_end = self._clip_crd(crd_emb) # (b, 3, 100)
         crd_end = torch.transpose(crd_end, 1, 2) # (b, 100, 3)
 
         similarity = (100.0 * torch.bmm(dlg_emb, crd_end))#.softmax(dim=0) # (b, 3, 100), (b,100, 3) -> (b, 3, 3)
-        #similarity = torch.reshape(similarity, (-1, 9))
-        #out_rnk = self._output_fc(similarity)
-        #soft_out_rnk = out_rnk.softmax(dim=1)
+        similarity = torch.reshape(similarity, (-1, 9))
+        out_rnk = self._output_fc(similarity)
+        soft_out_rnk = out_rnk.softmax(dim=1)
         #print('similarity.shape:',  similarity.shape) # ([3, 3])
         #print('similarity:',  similarity) # ([3, 3])
         #print('out_rnk:',  out_rnk) # ([3, 3])
         #$print('soft_out_rnk:', soft_out_rnk)
-        return similarity
+        return soft_out_rnk
         

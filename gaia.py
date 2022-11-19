@@ -1,21 +1,16 @@
 '''
 AI Fashion Coordinator
 (Baseline For Fashion-How Challenge)
-
 MIT License
-
 Copyright (C) 2022, Integrated Intelligence Research Section, ETRI
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
-
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
-
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -23,13 +18,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
 Update: 2022.04.20.
 '''
 
 
 import torch
-import torchmetrics
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
@@ -42,7 +35,7 @@ from scipy import stats
 from file_io import *
 from requirement import *
 from policy import *
-import wandb
+
 
 # # of items in fashion coordination
 NUM_ITEM_IN_COORDI = 4
@@ -56,19 +49,12 @@ IMG_FEAT_SIZE = 2048
 # augmentation ratio (aug2:aug1:org)
 AUGMENTATION_RATIO = [0.5, 0.4, 0.1]
 
-seed=2022
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)  # if use multi-GPU
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-np.random.seed(seed)
 
 class FahsionHowDataset(Dataset):
     """ Fashion-How dataset."""
     def __init__(self, in_file_trn_dialog, swer, mem_size, emb_size,
                  crd_size, metadata, itm2idx, idx2itm, feats, num_rnk,
-                 similarities, corr_thres, valid_num=0, is_valid=False):
+                 similarities, corr_thres):
         """
         initialize your data, download, etc.
         """
@@ -84,15 +70,11 @@ class FahsionHowDataset(Dataset):
         self._similarities = similarities
         self._corr_thres = corr_thres
         self._datatype = ['aug2', 'aug1', 'org']
-        
-        ''' 수정 사항 '''
-        # make_io_trn_data는 deterministic 한 dataset 만드는 함수이므로 결과를 미리 저장하고 로드하는 것으로 바꿈
         self._dlg, self._crd = make_io_trn_data(
                         in_file_trn_dialog, self._swer, self._mem_size,
                         self._crd_size, self._itm2idx, self._idx2itm,
                         self._metadata, self._similarities, self._num_rnk,
                         self._corr_thres, self._feats)
-
         self._len = len(self._dlg)
         self._num_item_in_coordi = len(self._crd[0][0])
 
@@ -172,7 +154,8 @@ class Model(nn.Module):
         """
         req = self._requirement(dlg)
         logits = self._policy(req, crd)
-        return logits
+        preds = torch.argmax(logits, 1)
+        return logits, preds
 
 
 class gAIa(object):
@@ -181,7 +164,6 @@ class gAIa(object):
         """
         initialize
         """
-        self.args = args
         self._device = device
         self._batch_size = args.batch_size
         self._model_path = args.model_path
@@ -217,17 +199,15 @@ class gAIa(object):
         # prepare DB for training
         if args.mode == 'train':
             # dataloader
-            train_dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
+            dataset = FahsionHowDataset(args.in_file_trn_dialog, swer,
                                         args.mem_size, self._emb_size,
                                         coordi_size, metadata, item2idx,
                                         idx2item, feats, self._num_rnk,
-                                        similarities, args.corr_thres, args.valid_num)
-            
-                
-            self._num_examples = len(train_dataset)
-            self._dataloader = DataLoader(train_dataset,
+                                        similarities, args.corr_thres)
+            self._num_examples = len(dataset)
+            self._dataloader = DataLoader(dataset,
                                           batch_size=self._batch_size,
-                                          shuffle=True, num_workers=8, pin_memory=True)
+                                          shuffle=True)
         # prepare DB for evaluation
         elif args.mode == 'test' or args.mode == 'zsl':
             self._tst_dlg, self._tst_crd = make_io_eval_data(
@@ -250,10 +230,10 @@ class gAIa(object):
 
         if args.mode == 'train':
             # optimizer
-            self._optimizer = optim.SGD(self._model.parameters(), lr=args.learning_rate)
-            self._lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self._optimizer, T_0=20, T_mult=2, eta_min=0)
+            self._optimizer = optim.SGD(self._model.parameters(),
+                                        lr=args.learning_rate)
 
-    def _get_loss(self, batch, loss_fct):
+    def _get_loss(self, batch):
         """
         calculate loss
         """
@@ -269,36 +249,19 @@ class gAIa(object):
         rnk = torch.stack(rnk_shuffle)
         dlg = dlg.type(torch.float32)
         crd = crd.type(torch.float32)
-        logits = self._model(dlg, crd)
+        logits, preds = self._model(dlg, crd)
         loss = 0.0
 
-        # label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
-        # for i in range(len(logits)):
-        #     loss += loss_fct(logits[i], label[i])
-        print(logits.shape)
-        logits = torch.mean(logits, dim=1)
-        print(logits.shape)
-        for i in range(len(logits)):
-            probs = nn.functional.softmax(logits[i], dim=0)
-            for j in range(len(self._rnk_lst)):
-                corr, _ = stats.weightedtau(
-                                self._num_rnk-1-self._rnk_lst[rnk[i]],
-                                self._num_rnk-1-self._rnk_lst[j])
-                loss += ((1.0 - corr) * 0.5 * probs[j])
-
+        loss_fct = torch.nn.CrossEntropyLoss()
         label =  torch.Tensor(rnk).long().to(self._device) # (n,6)
-        preds = torch.argmax(logits, 1)
+        for i in range(len(logits)):
+            loss += loss_fct(logits[i], label[i])
         return loss, preds, label
 
     def train(self):
         """
         training
         """
-        #wandb.init(project="fasionhow-task4",config=self.args) # , entity="stitching-tailors"
-        wandb.init(project="task4", entity="stitching-tailors",config=self.args)
-        wandb.run.name = 'clip_loss'
-        loss_fct = torch.nn.CrossEntropyLoss()
-
         print('\n<Train>')
         print('total examples in dataset: {}'.format(self._num_examples))
         if not os.path.exists(self._model_path):
@@ -318,35 +281,25 @@ class gAIa(object):
         self._model.to(self._device)
         end_epoch = self._epochs + init_epoch
         for curr_epoch in range(init_epoch, end_epoch):
-            calc_train_acc = torchmetrics.Accuracy()
             time_start = timeit.default_timer()
             losses = []
-            
             iter_bar = tqdm(self._dataloader)
-            for batch_idx, batch in enumerate(iter_bar):
-                example_ct = curr_epoch * (len(self._dataloader)) + batch_idx
+            for batch in iter_bar:
                 self._optimizer.zero_grad()
                 batch = [t.to(self._device) for t in batch]
-                loss, preds, labels = self._get_loss(batch, loss_fct)#.mean()
+                loss, pred, label = self._get_loss(batch)#.mean()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self._model.parameters(),
                                          self._max_grad_norm)
                 self._optimizer.step()
-                losses.append(loss.mean())
-                train_acc = calc_train_acc(preds.cpu().detach(), labels.cpu().detach())
+                losses.append(loss)
             time_end = timeit.default_timer()
-            
             print('-'*30)
             print('Epoch: {}/{}'.format(curr_epoch, end_epoch - 1))
             print('Time: {:.2f}sec'.format(time_end - time_start))
             print('Loss: {:.4f}'.format(torch.mean(torch.tensor(losses))))
-            print('Val pred:', preds.detach().cpu(), 'label:', labels.detach().cpu())
-            print("train_acc: ", calc_train_acc.compute())
+            print('pred:', pred.detach().cpu(), 'label:', label.detach().cpu())
             print('-'*30)
-            #self._lr_scheduler.step()
-            wandb.log({"train_loss":float(torch.mean(torch.tensor(losses)).detach().cpu()),  \
-                       "train_acc":calc_train_acc.compute(), \
-                       'learning_rate':float(self._lr_scheduler.get_last_lr()[0])}, step=example_ct+1)
             if curr_epoch % self._save_freq == 0:
                 file_name = os.path.join(self._model_path,
                                          'gAIa-{}.pt'.format(curr_epoch))
@@ -439,6 +392,7 @@ class gAIa(object):
         preds, num_examples = self._predict(self._tst_dlg, self._tst_crd)
         # 실제 제출결과 생성시 경로는 '/home/work/model/prediction.csv'로 고정
         np.savetxt("/home/work/model/prediction.csv", preds.astype(int), encoding='utf8', fmt='%d')
+        #np.savetxt("/home/yohan/fascode/ETRI-FHOW-TASK34/prediction.csv", preds.astype(int), encoding='utf8', fmt='%d')
         time_end = timeit.default_timer()
         print('-'*50)
         print('Prediction Time: {:.2f}sec'.format(time_end-time_start))
